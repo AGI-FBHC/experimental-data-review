@@ -54,10 +54,10 @@ def create_task():
         task['progress'] = 10
         
         # 1. 提取统计量
-        file_path = os.path.join('/tmp/uploads', f"{file_id}.docx")
+        file_path = os.path.join('/home/jnuaipr/Documents/GitHub/experimental-data-review/backend/uploads', f"{file_id}.docx")
         if not os.path.exists(file_path):
-            for ext in ['.pdf', '.txt', '.md']:
-                alt_path = os.path.join('/tmp/uploads', f"{file_id}{ext}")
+            for ext in ['.pdf', '.txt', '.md', '.tex']:
+                alt_path = os.path.join('/home/jnuaipr/Documents/GitHub/experimental-data-review/backend/uploads', f"{file_id}{ext}")
                 if os.path.exists(alt_path):
                     file_path = alt_path
                     break
