@@ -1,0 +1,22 @@
+# Dependencies
+frontend/node_modules/
+backend/venv/
+__pycache__/
+*.pyc
+
+# Build outputs
+frontend/dist/
+
+# Uploads & reports
+backend/uploads/*
+backend/reports/*
+!backend/uploads/.gitkeep
+!backend/reports/.gitkeep
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
