@@ -1,6 +1,7 @@
 import uuid
 from datetime import datetime
 from flask import Blueprint, request, jsonify
+from ..services.chat_service import get_chat_service
 
 chat_bp = Blueprint('chat', __name__)
 
@@ -9,91 +10,80 @@ conversations = {}
 messages = {}
 
 
-@chat_bp.route('/conversations', methods=['GET'])
-def list_conversations():
-    """列出所有对话"""
-    return jsonify({
-        'success': True,
-        'conversations': list(conversations.values())
-    })
-
-
 @chat_bp.route('/conversations', methods=['POST'])
 def create_conversation():
     """创建新对话"""
-    data = request.get_json()
-    conv_id = str(uuid.uuid4())
-    conversation = {
-        'id': conv_id,
-        'title': data.get('title', '新对话'),
-        'model': data.get('model', 'claude'),
-        'createdAt': datetime.now().isoformat(),
-        'updatedAt': datetime.now().isoformat()
-    }
-    conversations[conv_id] = conversation
-    messages[conv_id] = []
-
+    data = request.get_json() or {}
+    task_id = data.get('task_id')
+    
+    service = get_chat_service()
+    conv_id = service.create_conversation(task_id)
+    
     return jsonify({
-        'success': True,
-        'conversation': conversation
-    })
-
-
-@chat_bp.route('/conversations/<conv_id>/messages', methods=['GET'])
-def get_messages(conv_id):
-    """获取对话消息"""
-    if conv_id not in conversations:
-        return jsonify({'error': 'Conversation not found'}), 404
-    return jsonify({
-        'success': True,
-        'messages': messages.get(conv_id, [])
+        'conversation_id': conv_id,
+        'task_id': task_id,
+        'created_at': datetime.now().isoformat()
     })
 
 
 @chat_bp.route('/conversations/<conv_id>/messages', methods=['POST'])
 def send_message(conv_id):
     """发送消息"""
-    if conv_id not in conversations:
-        return jsonify({'error': 'Conversation not found'}), 404
-
     data = request.get_json()
-    content = data.get('content', '')
-
-    # 用户消息
-    user_msg = {
-        'id': str(uuid.uuid4()),
-        'role': 'user',
-        'content': content,
-        'timestamp': datetime.now().isoformat()
-    }
-    messages[conv_id].append(user_msg)
-
-    # TODO: 调用 AI 模型获取回复
-    # 这里先返回占位回复
-    assistant_msg = {
-        'id': str(uuid.uuid4()),
-        'role': 'assistant',
-        'content': f'[AI 回复占位] 收到消息: {content[:50]}...',
-        'timestamp': datetime.now().isoformat()
-    }
-    messages[conv_id].append(assistant_msg)
-
-    conversations[conv_id]['updatedAt'] = datetime.now().isoformat()
-
+    if not data or 'content' not in data:
+        return jsonify({'error': 'content is required'}), 400
+    
+    service = get_chat_service()
+    conv = service.get_conversation(conv_id)
+    
+    if not conv:
+        return jsonify({'error': 'Conversation not found'}), 404
+    
+    # Get review context if task_id is associated
+    review_context = None
+    if conv.task_id:
+        # In production, fetch actual review results
+        review_context = {'task_id': conv.task_id}
+    
+    # Generate response
+    response = service.generate_response(
+        conv_id=conv_id,
+        user_message=data['content'],
+        review_context=review_context
+    )
+    
     return jsonify({
-        'success': True,
-        'message': assistant_msg
+        'conversation_id': conv_id,
+        'response': response,
+        'timestamp': datetime.now().isoformat()
     })
 
 
-@chat_bp.route('/conversations/<conv_id>', methods=['DELETE'])
-def delete_conversation(conv_id):
-    """删除对话"""
-    if conv_id not in conversations:
+@chat_bp.route('/conversations/<conv_id>/messages', methods=['GET'])
+def get_messages(conv_id):
+    """获取对话历史"""
+    service = get_chat_service()
+    history = service.get_conversation_history(conv_id)
+    
+    return jsonify({
+        'conversation_id': conv_id,
+        'messages': history
+    })
+
+
+@chat_bp.route('/conversations/<conv_id>', methods=['GET'])
+def get_conversation(conv_id):
+    """获取对话信息"""
+    service = get_chat_service()
+    conv = service.get_conversation(conv_id)
+    
+    if not conv:
         return jsonify({'error': 'Conversation not found'}), 404
-
-    del conversations[conv_id]
-    if conv_id in messages:
-        del messages[conv_id]
-
-    return jsonify({'success': True})
+    
+    return jsonify({
+        'id': conv.id,
+        'task_id': conv.task_id,
+        'message_count': len(conv.messages),
+        'created_at': conv.created_at,
+        'updated_at': conv.updated_at
+    })
