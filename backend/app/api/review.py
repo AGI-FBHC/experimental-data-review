@@ -4,6 +4,7 @@ import json
 from datetime import datetime
 from flask import Blueprint, request, jsonify
 from ..services import extract_statistics, run_grim_tests, run_cross_reference_audit, run_domain_audit, generate_html_report
+from ..services.dual_model_validator import get_validator, ConsensusStatus
 
 review_bp = Blueprint('review', __name__)
 
@@ -43,22 +44,39 @@ def create_task():
         
         # 1. 提取统计量
         file_path = os.path.join('/tmp/uploads', f"{file_id}.docx")
+        if not os.path.exists(file_path):
+            # Try other extensions
+            for ext in ['.pdf', '.txt', '.md']:
+                alt_path = os.path.join('/tmp/uploads', f"{file_id}{ext}")
+                if os.path.exists(alt_path):
+                    file_path = alt_path
+                    break
+        
         stats = extract_statistics(file_path)
-        task['progress'] = 30
+        task['progress'] = 25
         
         # 2. GRIM 测试
         grim_results = run_grim_tests(stats)
-        task['progress'] = 50
+        task['progress'] = 40
         
         # 3. 交叉审查
         cross_results = run_cross_reference_audit(stats)
-        task['progress'] = 70
+        task['progress'] = 55
         
         # 4. 领域审查
         domain_results = run_domain_audit(stats, domain)
-        task['progress'] = 90
+        task['progress'] = 70
         
-        # 5. 生成报告
+        # 5. 双模型校验（如果启用）
+        dual_result = None
+        if dual_model:
+            validator = get_validator()
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                text = f.read()
+            dual_result = validator.validate(text, domain, stats)
+            task['progress'] = 85
+        
+        # 6. 生成报告
         report_html = generate_html_report(stats, grim_results, cross_results, domain_results)
         
         # 保存报告
@@ -69,7 +87,9 @@ def create_task():
         
         task['status'] = 'completed'
         task['progress'] = 100
-        task['result'] = {
+        
+        # Build result
+        result = {
             'stats_summary': {
                 'total_stats': len(stats),
                 'p_values': len([s for s in stats if s.get('type') == 'p_value']),
@@ -81,6 +101,28 @@ def create_task():
             'domain_issues': len([d for d in domain_results if d.get('is_error')]),
             'report_url': f"/api/review/reports/{task_id}"
         }
+        
+        # Add dual-model results if enabled
+        if dual_result:
+            result['dual_model'] = {
+                'consensus': dual_result.status.value,
+                'validator_a': {
+                    'model': dual_result.validator_a.model_name,
+                    'passed': dual_result.validator_a.passed,
+                    'issues_count': len(dual_result.validator_a.issues),
+                    'confidence': dual_result.validator_a.confidence
+                },
+                'validator_b': {
+                    'model': dual_result.validator_b.model_name,
+                    'passed': dual_result.validator_b.passed,
+                    'issues_count': len(dual_result.validator_b.issues),
+                    'confidence': dual_result.validator_b.confidence
+                },
+                'disagreement_areas': dual_result.disagreement_areas,
+                'recommendation': dual_result.recommendation
+            }
+        
+        task['result'] = result
         task['completed_at'] = datetime.now().isoformat()
         
     except Exception as e:
@@ -127,3 +169,30 @@ def get_report(task_id):
 def list_tasks():
     """列出所有任务"""
     return jsonify(list(review_tasks.values()))
+
+
+@review_bp.route('/config', methods=['GET'])
+def get_config():
+    """获取双模型配置"""
+    from ..config import VALIDATOR_A_MODEL, VALIDATOR_B_MODEL, CONSENSUS_THRESHOLD, AUTO_ESCALATE, DOMAIN_PRESETS
+    
+    return jsonify({
+        'validator_a': {
+            'model': VALIDATOR_A_MODEL,
+            'provider': 'anthropic'
+        },
+        'validator_b': {
+            'model': VALIDATOR_B_MODEL,
+            'provider': 'google'
+        },
+        'consensus_threshold': CONSENSUS_THRESHOLD,
+        'auto_escalate': AUTO_ESCALATE,
+        'domain_presets': DOMAIN_PRESETS
+    })
+
+
+@review_bp.route('/stats', methods=['GET'])
+def get_stats():
+    """获取校验统计"""
+    validator = get_validator()
+    return jsonify(validator.get_statistics())

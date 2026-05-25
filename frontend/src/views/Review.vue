@@ -172,6 +172,47 @@
             </el-row>
           </div>
 
+          <!-- 双模型校验结果 -->
+          <div class="dual-model-result" v-if="currentTask.result?.dual_model">
+            <el-divider>双模型校验结果</el-divider>
+            <el-alert
+              :title="currentTask.result.dual_model.recommendation"
+              :type="currentTask.result.dual_model.consensus === 'agree_pass' ? 'success' : currentTask.result.dual_model.consensus === 'agree_fail' ? 'error' : 'warning'"
+              :closable="false"
+              show-icon
+            />
+            <el-row :gutter="20" class="model-comparison">
+              <el-col :span="12">
+                <el-card>
+                  <template #header>
+                    <div class="model-header">
+                      <span>{{ currentTask.result.dual_model.validator_a.model }}</span>
+                      <el-tag :type="currentTask.result.dual_model.validator_a.passed ? 'success' : 'danger'">
+                        {{ currentTask.result.dual_model.validator_a.passed ? '通过' : '未通过' }}
+                      </el-tag>
+                    </div>
+                  </template>
+                  <div>发现问题: {{ currentTask.result.dual_model.validator_a.issues_count }}</div>
+                  <div>置信度: {{ (currentTask.result.dual_model.validator_a.confidence * 100).toFixed(0) }}%</div>
+                </el-card>
+              </el-col>
+              <el-col :span="12">
+                <el-card>
+                  <template #header>
+                    <div class="model-header">
+                      <span>{{ currentTask.result.dual_model.validator_b.model }}</span>
+                      <el-tag :type="currentTask.result.dual_model.validator_b.passed ? 'success' : 'danger'">
+                        {{ currentTask.result.dual_model.validator_b.passed ? '通过' : '未通过' }}
+                      </el-tag>
+                    </div>
+                  </template>
+                  <div>发现问题: {{ currentTask.result.dual_model.validator_b.issues_count }}</div>
+                  <div>置信度: {{ (currentTask.result.dual_model.validator_b.confidence * 100).toFixed(0) }}%</div>
+                </el-card>
+              </el-col>
+            </el-row>
+          </div>
+
           <!-- 详细结果 -->
           <div class="result-details">
             <el-collapse>
@@ -305,49 +346,67 @@ const startReview = async () => {
 
   submitting.value = true
   try {
-    const res = await axios.post(`${API_BASE}/review/submit`, {
-      fileId: uploadedFile.value.id,
+    const res = await axios.post(`${API_BASE}/review/tasks`, {
+      file_id: uploadedFile.value.id,
       domain: config.value.domain,
-      dualModel: config.value.dualModel,
-      modelA: config.value.modelA,
-      modelB: config.value.modelB
+      dual_model: config.value.dualModel
     })
 
-    if (res.data.success) {
+    if (res.data.task_id) {
       currentTask.value = {
-        id: res.data.taskId,
-        status: 'processing',
+        id: res.data.task_id,
+        status: res.data.status,
         progress: 0
       }
       ElMessage.success('审查任务已提交')
-      // TODO: 轮询进度
-      simulateProgress()
+      pollProgress(res.data.task_id)
     }
   } catch (err) {
-    ElMessage.error('提交失败: ' + err.message)
+    ElMessage.error('提交失败: ' + (err.response?.data?.error || err.message))
   } finally {
     submitting.value = false
   }
 }
 
-const simulateProgress = () => {
-  // 模拟进度（实际应轮询后端）
-  let progress = 0
-  const interval = setInterval(() => {
-    progress += Math.random() * 15
-    if (progress >= 100) {
-      progress = 100
-      clearInterval(interval)
-      currentTask.value.status = 'completed'
-      currentTask.value.progress = 100
-    } else {
-      currentTask.value.progress = Math.floor(progress)
+const pollProgress = async (taskId) => {
+  const interval = setInterval(async () => {
+    try {
+      const res = await axios.get(`${API_BASE}/review/tasks/${taskId}`)
+      currentTask.value = res.data
+      
+      if (res.data.status === 'completed' || res.data.status === 'failed') {
+        clearInterval(interval)
+        if (res.data.status === 'completed') {
+          ElMessage.success('审查完成')
+          // Update result stats from actual data
+          if (res.data.result) {
+            updateResultStats(res.data.result)
+          }
+        } else {
+          ElMessage.error('审查失败: ' + res.data.error)
+        }
+      }
+    } catch (err) {
+      console.error('Poll error:', err)
     }
-  }, 1000)
+  }, 2000)
+}
+
+const updateResultStats = (result) => {
+  resultStats.value = {
+    high: result.grim_issues + result.cross_issues,
+    medium: result.domain_issues,
+    low: 0,
+    pass: result.stats_summary.total_stats - result.grim_issues - result.cross_issues - result.domain_issues
+  }
 }
 
 const downloadReport = () => {
-  ElMessage.info('报告下载功能开发中')
+  if (currentTask.value?.result?.report_url) {
+    window.open(`${API_BASE}${currentTask.value.result.report_url}`, '_blank')
+  } else {
+    ElMessage.warning('报告尚未生成')
+  }
 }
 
 const resetReview = () => {
@@ -509,6 +568,20 @@ const resetReview = () => {
 .stat-label {
   font-size: 14px;
   opacity: 0.9;
+}
+
+.dual-model-result {
+  margin: 20px 0;
+}
+
+.model-comparison {
+  margin-top: 20px;
+}
+
+.model-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
 }
 
 .result-item {
