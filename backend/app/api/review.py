@@ -5,6 +5,7 @@ from datetime import datetime
 from flask import Blueprint, request, jsonify
 from ..services import extract_statistics, run_grim_tests, run_cross_reference_audit, run_domain_audit, generate_html_report
 from ..services.dual_model_validator import get_validator, ConsensusStatus
+from ..config import AVAILABLE_MODELS, validate_model_selection
 
 review_bp = Blueprint('review', __name__)
 
@@ -18,7 +19,15 @@ def create_task():
     data = request.get_json()
     file_id = data.get('file_id')
     domain = data.get('domain', 'general')
-    dual_model = data.get('dual_model', False)
+    
+    # 模型选择（用户自选）
+    model_a = data.get('model_a', 'kimi-coding')
+    model_b = data.get('model_b', '')  # 空字符串 = 单模型
+    
+    # 验证模型选择
+    valid, msg = validate_model_selection(model_a, model_b)
+    if not valid:
+        return jsonify({'error': msg}), 400
     
     if not file_id:
         return jsonify({'error': 'file_id is required'}), 400
@@ -28,7 +37,9 @@ def create_task():
         'id': task_id,
         'file_id': file_id,
         'domain': domain,
-        'dual_model': dual_model,
+        'model_a': model_a,
+        'model_b': model_b,
+        'dual_model': bool(model_b),
         'status': 'pending',
         'progress': 0,
         'result': None,
@@ -45,7 +56,6 @@ def create_task():
         # 1. 提取统计量
         file_path = os.path.join('/tmp/uploads', f"{file_id}.docx")
         if not os.path.exists(file_path):
-            # Try other extensions
             for ext in ['.pdf', '.txt', '.md']:
                 alt_path = os.path.join('/tmp/uploads', f"{file_id}{ext}")
                 if os.path.exists(alt_path):
@@ -67,19 +77,18 @@ def create_task():
         domain_results = run_domain_audit(stats, domain)
         task['progress'] = 70
         
-        # 5. 双模型校验（如果启用）
+        # 5. LLM 校验（用户选择的模型）
         dual_result = None
-        if dual_model:
-            validator = get_validator()
+        if model_a:
+            validator = get_validator(model_a, model_b or None)
             with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                 text = f.read()
             dual_result = validator.validate(text, domain, stats)
-            task['progress'] = 85
+            task['progress'] = 90
         
         # 6. 生成报告
         report_html = generate_html_report(stats, grim_results, cross_results, domain_results)
         
-        # 保存报告
         report_path = os.path.join('/tmp/reports', f"{task_id}.html")
         os.makedirs('/tmp/reports', exist_ok=True)
         with open(report_path, 'w', encoding='utf-8') as f:
@@ -99,12 +108,16 @@ def create_task():
             'grim_issues': len([g for g in grim_results if g.get('is_error')]),
             'cross_issues': len([c for c in cross_results if c.get('is_error')]),
             'domain_issues': len([d for d in domain_results if d.get('is_error')]),
-            'report_url': f"/api/review/reports/{task_id}"
+            'report_url': f"/api/review/reports/{task_id}",
+            'models_used': {
+                'model_a': model_a,
+                'model_b': model_b or None
+            }
         }
         
-        # Add dual-model results if enabled
+        # Add LLM validation results
         if dual_result:
-            result['dual_model'] = {
+            result['llm_review'] = {
                 'consensus': dual_result.status.value,
                 'validator_a': {
                     'model': dual_result.validator_a.model_name,
@@ -117,7 +130,7 @@ def create_task():
                     'passed': dual_result.validator_b.passed,
                     'issues_count': len(dual_result.validator_b.issues),
                     'confidence': dual_result.validator_b.confidence
-                },
+                } if dual_result.validator_b else None,
                 'disagreement_areas': dual_result.disagreement_areas,
                 'recommendation': dual_result.recommendation
             }
@@ -144,6 +157,8 @@ def get_task(task_id):
         'status': task['status'],
         'progress': task['progress'],
         'domain': task['domain'],
+        'model_a': task['model_a'],
+        'model_b': task['model_b'],
         'dual_model': task['dual_model'],
         'result': task.get('result'),
         'error': task.get('error'),
@@ -171,20 +186,34 @@ def list_tasks():
     return jsonify(list(review_tasks.values()))
 
 
-@review_bp.route('/config', methods=['GET'])
-def get_config():
-    """获取双模型配置"""
-    from ..config import VALIDATOR_A_MODEL, VALIDATOR_B_MODEL, CONSENSUS_THRESHOLD, AUTO_ESCALATE, DOMAIN_PRESETS
+@review_bp.route('/models', methods=['GET'])
+def get_models():
+    """获取可用模型列表"""
+    models = []
+    for key, config in AVAILABLE_MODELS.items():
+        models.append({
+            'key': key,
+            'name': config['name'],
+            'provider': config['provider'],
+            'description': config['description']
+        })
     
     return jsonify({
-        'validator_a': {
-            'model': VALIDATOR_A_MODEL,
-            'provider': 'anthropic'
-        },
-        'validator_b': {
-            'model': VALIDATOR_B_MODEL,
-            'provider': 'google'
-        },
+        'models': models,
+        'recommendations': [
+            '单模型审查：选择 Kimi 或 DeepSeek-v4-pro',
+            '双模型审查：Kimi + DeepSeek（推荐，提高多样性）',
+            '不推荐同时使用两个 DeepSeek 模型'
+        ]
+    })
+
+
+@review_bp.route('/config', methods=['GET'])
+def get_config():
+    """获取审查配置"""
+    from ..config import CONSENSUS_THRESHOLD, AUTO_ESCALATE, DOMAIN_PRESETS
+    
+    return jsonify({
         'consensus_threshold': CONSENSUS_THRESHOLD,
         'auto_escalate': AUTO_ESCALATE,
         'domain_presets': DOMAIN_PRESETS

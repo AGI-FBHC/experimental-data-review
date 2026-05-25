@@ -76,23 +76,54 @@
               </el-select>
             </el-form-item>
 
-            <el-form-item label="双模型校验">
-              <el-switch v-model="config.dualModel" />
-              <span class="form-tip">启用两个独立模型交叉验证，提高准确性</span>
-            </el-form-item>
-
-            <el-form-item label="模型 A" v-if="config.dualModel">
-              <el-select v-model="config.modelA">
-                <el-option label="Claude Sonnet" value="claude" />
-                <el-option label="GPT-4" value="gpt4" />
+            <el-form-item label="模型选择">
+              <el-alert
+                title="推荐：单模型选 Kimi 或 DeepSeek-v4-pro；双模型选 Kimi + DeepSeek（提高多样性）"
+                type="info"
+                :closable="false"
+                style="margin-bottom: 12px"
+              />
+              
+              <el-select v-model="config.modelA" placeholder="选择主模型" style="width: 100%; margin-bottom: 10px">
+                <el-option
+                  v-for="model in availableModels"
+                  :key="model.key"
+                  :label="model.name"
+                  :value="model.key"
+                >
+                  <span>{{ model.name }}</span>
+                  <el-tag size="small" type="info" style="margin-left: 8px">{{ model.provider }}</el-tag>
+                </el-option>
               </el-select>
-            </el-form-item>
-
-            <el-form-item label="模型 B" v-if="config.dualModel">
-              <el-select v-model="config.modelB">
-                <el-option label="Gemini Pro" value="gemini" />
-                <el-option label="DeepSeek" value="deepseek" />
+              
+              <el-checkbox v-model="config.enableDualModel" style="margin-bottom: 10px">
+                启用双模型交叉验证
+              </el-checkbox>
+              
+              <el-select 
+                v-if="config.enableDualModel" 
+                v-model="config.modelB" 
+                placeholder="选择辅助模型（可选）"
+                style="width: 100%"
+              >
+                <el-option
+                  v-for="model in availableModelsForB"
+                  :key="model.key"
+                  :label="model.name"
+                  :value="model.key"
+                >
+                  <span>{{ model.name }}</span>
+                  <el-tag size="small" type="info" style="margin-left: 8px">{{ model.provider }}</el-tag>
+                </el-option>
               </el-select>
+              
+              <el-alert
+                v-if="isBothDeepseek"
+                title="⚠️ 不推荐同时使用两个 DeepSeek 模型，会降低审查多样性"
+                type="warning"
+                :closable="false"
+                style="margin-top: 10px"
+              />
             </el-form-item>
 
             <el-form-item>
@@ -119,6 +150,7 @@
             <el-step title="提取统计量" description="从手稿中提取 NHST 统计量" />
             <el-step title="完整性检查" description="GRIM / GRIMMER / DEBIT" />
             <el-step title="交叉审查" description="Abstract vs Results vs Tables" />
+            <el-step title="LLM 审查" :description="llmStepDesc" />
             <el-step title="生成报告" description="HTML 审查报告" />
           </el-steps>
 
@@ -172,42 +204,43 @@
             </el-row>
           </div>
 
-          <!-- 双模型校验结果 -->
-          <div class="dual-model-result" v-if="currentTask.result?.dual_model">
-            <el-divider>双模型校验结果</el-divider>
+          <!-- LLM 审查结果 -->
+          <div class="llm-result" v-if="currentTask.result?.llm_review">
+            <el-divider>LLM 智能审查结果</el-divider>
             <el-alert
-              :title="currentTask.result.dual_model.recommendation"
-              :type="currentTask.result.dual_model.consensus === 'agree_pass' ? 'success' : currentTask.result.dual_model.consensus === 'agree_fail' ? 'error' : 'warning'"
+              :title="currentTask.result.llm_review.recommendation"
+              :type="llmAlertType"
               :closable="false"
               show-icon
             />
+            
             <el-row :gutter="20" class="model-comparison">
               <el-col :span="12">
                 <el-card>
                   <template #header>
                     <div class="model-header">
-                      <span>{{ currentTask.result.dual_model.validator_a.model }}</span>
-                      <el-tag :type="currentTask.result.dual_model.validator_a.passed ? 'success' : 'danger'">
-                        {{ currentTask.result.dual_model.validator_a.passed ? '通过' : '未通过' }}
+                      <span>{{ currentTask.result.llm_review.validator_a.model }}</span>
+                      <el-tag :type="currentTask.result.llm_review.validator_a.passed ? 'success' : 'danger'">
+                        {{ currentTask.result.llm_review.validator_a.passed ? '通过' : '未通过' }}
                       </el-tag>
                     </div>
                   </template>
-                  <div>发现问题: {{ currentTask.result.dual_model.validator_a.issues_count }}</div>
-                  <div>置信度: {{ (currentTask.result.dual_model.validator_a.confidence * 100).toFixed(0) }}%</div>
+                  <div>发现问题: {{ currentTask.result.llm_review.validator_a.issues_count }}</div>
+                  <div>置信度: {{ (currentTask.result.llm_review.validator_a.confidence * 100).toFixed(0) }}%</div>
                 </el-card>
               </el-col>
-              <el-col :span="12">
+              <el-col :span="12" v-if="currentTask.result.llm_review.validator_b">
                 <el-card>
                   <template #header>
                     <div class="model-header">
-                      <span>{{ currentTask.result.dual_model.validator_b.model }}</span>
-                      <el-tag :type="currentTask.result.dual_model.validator_b.passed ? 'success' : 'danger'">
-                        {{ currentTask.result.dual_model.validator_b.passed ? '通过' : '未通过' }}
+                      <span>{{ currentTask.result.llm_review.validator_b.model }}</span>
+                      <el-tag :type="currentTask.result.llm_review.validator_b.passed ? 'success' : 'danger'">
+                        {{ currentTask.result.llm_review.validator_b.passed ? '通过' : '未通过' }}
                       </el-tag>
                     </div>
                   </template>
-                  <div>发现问题: {{ currentTask.result.dual_model.validator_b.issues_count }}</div>
-                  <div>置信度: {{ (currentTask.result.dual_model.validator_b.confidence * 100).toFixed(0) }}%</div>
+                  <div>发现问题: {{ currentTask.result.llm_review.validator_b.issues_count }}</div>
+                  <div>置信度: {{ (currentTask.result.llm_review.validator_b.confidence * 100).toFixed(0) }}%</div>
                 </el-card>
               </el-col>
             </el-row>
@@ -251,7 +284,7 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import axios from 'axios'
 
@@ -262,11 +295,12 @@ const API_BASE = import.meta.env.VITE_API_BASE || '/api'
 const uploadedFile = ref(null)
 const currentTask = ref(null)
 const submitting = ref(false)
+const availableModels = ref([])
 const config = ref({
   domain: 'general',
-  dualModel: false,
-  modelA: 'claude',
-  modelB: 'gemini'
+  modelA: 'kimi-coding',
+  modelB: '',
+  enableDualModel: false
 })
 
 // 模拟结果数据
@@ -291,10 +325,11 @@ const uploadUrl = computed(() => `${API_BASE}/file/upload`)
 const activeStep = computed(() => {
   if (!currentTask.value) return 0
   const progress = currentTask.value.progress
-  if (progress < 25) return 0
-  if (progress < 50) return 1
-  if (progress < 75) return 2
-  return 3
+  if (progress < 20) return 0
+  if (progress < 40) return 1
+  if (progress < 60) return 2
+  if (progress < 80) return 3
+  return 4
 })
 const statusType = computed(() => {
   const status = currentTask.value?.status
@@ -310,6 +345,43 @@ const statusText = computed(() => {
 const progressStatus = computed(() => {
   if (currentTask.value?.status === 'failed') return 'exception'
   return ''
+})
+const llmStepDesc = computed(() => {
+  if (config.value.enableDualModel && config.value.modelB) {
+    return `${config.value.modelA} + ${config.value.modelB}`
+  }
+  return config.value.modelA || 'Kimi'
+})
+const llmAlertType = computed(() => {
+  const consensus = currentTask.value?.result?.llm_review?.consensus
+  if (consensus === 'agree_pass') return 'success'
+  if (consensus === 'agree_fail') return 'error'
+  if (consensus === 'disagree') return 'warning'
+  return 'info'
+})
+const isBothDeepseek = computed(() => {
+  return config.value.modelA?.includes('deepseek') && config.value.modelB?.includes('deepseek')
+})
+const availableModelsForB = computed(() => {
+  return availableModels.value.filter(m => m.key !== config.value.modelA)
+})
+
+// 加载可用模型
+onMounted(async () => {
+  try {
+    const res = await axios.get(`${API_BASE}/review/models`)
+    if (res.data.models) {
+      availableModels.value = res.data.models
+    }
+  } catch (err) {
+    console.error('Failed to load models:', err)
+    // Fallback
+    availableModels.value = [
+      { key: 'kimi-coding', name: 'Kimi Coding', provider: 'kimi' },
+      { key: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash', provider: 'deepseek' },
+      { key: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro', provider: 'deepseek' }
+    ]
+  }
 })
 
 // 方法
@@ -349,7 +421,8 @@ const startReview = async () => {
     const res = await axios.post(`${API_BASE}/review/tasks`, {
       file_id: uploadedFile.value.id,
       domain: config.value.domain,
-      dual_model: config.value.dualModel
+      model_a: config.value.modelA,
+      model_b: config.value.enableDualModel ? config.value.modelB : ''
     })
 
     if (res.data.task_id) {
@@ -378,7 +451,6 @@ const pollProgress = async (taskId) => {
         clearInterval(interval)
         if (res.data.status === 'completed') {
           ElMessage.success('审查完成')
-          // Update result stats from actual data
           if (res.data.result) {
             updateResultStats(res.data.result)
           }
@@ -414,9 +486,9 @@ const resetReview = () => {
   currentTask.value = null
   config.value = {
     domain: 'general',
-    dualModel: false,
-    modelA: 'claude',
-    modelB: 'gemini'
+    modelA: 'kimi-coding',
+    modelB: '',
+    enableDualModel: false
   }
 }
 </script>
@@ -570,7 +642,7 @@ const resetReview = () => {
   opacity: 0.9;
 }
 
-.dual-model-result {
+.llm-result {
   margin: 20px 0;
 }
 
